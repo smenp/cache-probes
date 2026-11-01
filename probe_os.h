@@ -215,21 +215,27 @@ static inline void place(void) {
   printf("placement: pinned to logical CPU %d (sched_setaffinity), running on %d\n", last, sched_getcpu());
 }
 static inline size_t page_size(void) { return (size_t)sysconf(_SC_PAGESIZE); }
-/* huge = 1: transparent huge pages where the system grants them, the region 2 MiB aligned so that it can be;
- * huge = 0: base pages only, every page alike for every layout. */
+/* huge = 1: transparent huge pages where the system grants them; huge = 0: base pages only, every page alike for
+ * every layout. A huge page backs only a whole 2 MiB extent, aligned, that the advice covers, so the region is mapped,
+ * advised and touched in whole aligned extents. *granted: the region's mapping holds huge pages. */
 static inline unsigned char *map(size_t bytes, int huge, int *granted) {
-  const size_t two_mib = (size_t)2 << 20;
-  size_t padded = bytes + two_mib;
-  unsigned char *p = mmap(NULL, padded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  const size_t two_mib = (size_t)2 << 20, whole = (bytes + two_mib - 1) / two_mib * two_mib;
+  unsigned char *p = mmap(NULL, whole + two_mib, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (p == MAP_FAILED) return NULL;
   unsigned char *aligned = (unsigned char *)(((uintptr_t)p + two_mib - 1) & ~(uintptr_t)(two_mib - 1));
-  madvise(aligned, bytes, huge ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
-  memset(aligned, 1, bytes);
-  FILE *f = fopen("/proc/self/smaps_rollup", "r");
+  madvise(aligned, whole, huge ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
+  memset(aligned, 1, whole);
+  FILE *f = fopen("/proc/self/smaps", "r");
   char text[256];
+  int mine = 0;
   long kib = 0;
-  while (f && fgets(text, sizeof text, f))
-    if (strncmp(text, "AnonHugePages:", 14) == 0) kib = strtol(text + 14, NULL, 10);
+  while (f && fgets(text, sizeof text, f)) {
+    unsigned long start, end;
+    if (sscanf(text, "%lx-%lx ", &start, &end) == 2)
+      mine = start <= (uintptr_t)aligned && (uintptr_t)aligned < end;
+    else if (mine && strncmp(text, "AnonHugePages:", 14) == 0)
+      kib = strtol(text + 14, NULL, 10);
+  }
   if (f) fclose(f);
   *granted = kib > 0;
   return aligned;

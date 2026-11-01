@@ -19,10 +19,12 @@
  * The bounds. Strides S run over the powers of two from 2 lines to a page: a line apart, any layout puts k
  * distinct lines in one set of a one-set (fully associative) structure, which no layout avoids; past a page,
  * virtual addresses no longer choose the bits a physically indexed structure sets by. At stride S the probe tries
- * k up to K(S) = l1d_ways * max(1, min(l1d_span, page) / S): then the conflict layout's region (k S bytes) fits the
- * first-level data cache, no set of it holding more of the region than its ways, and no visit puts more lines into
- * one of its sets than its ways; so a write-back first-level cache serves every store of the conflict layout, and
- * its set conflicts and misses are never read as a structure (the free layouts' gaps can only slow them). Where a
+ * k up to K(S) = (l1d_ways - 1) * max(1, min(l1d_span, page) / S): then the conflict layout's region (k S bytes)
+ * fits the first-level data cache with one way of every set left for the process's other lines (its stack, the
+ * clock's data), and no visit puts more lines into one of its sets than its ways; so a write-back first-level cache
+ * serves every store of the conflict layout, and its set conflicts and misses are never read as a structure (the
+ * free layouts' gaps can only slow them). A region filling every way of every set is slower in the conflict layout
+ * on some cores (within the last streams of a full first level), which is the first level, not a structure past it. Where a
  * way of the first-level cache spans more than a page, the address bits past the page that pick its set are the
  * physical page's, which no layout chooses, so the bound counts the sets one page spans. A structure of fewer bytes
  * than the first-level cache is in reach (its ways + 1 <= K(P)).
@@ -232,7 +234,7 @@ static unsigned ceil_log2(unsigned x) {
 static unsigned k_bound(const struct machine *m, size_t S) {
   size_t chosen = m->l1d_span < m->page ? m->l1d_span : m->page; /* the span virtual addresses choose sets in */
   size_t share = chosen > S ? chosen / S : 1;
-  return (unsigned)(m->l1d_ways * share);
+  return (unsigned)((m->l1d_ways - 1) * share); /* one way of every set left for the process's other lines */
 }
 
 /* Base pages only: every page alike for every layout. */

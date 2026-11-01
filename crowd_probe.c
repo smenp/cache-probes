@@ -34,8 +34,10 @@
  * the conflict one slower reaches the critical count (chance reaches it with probability at most family_false_rate
  * over every point of the probe) and the conflict median is slower than the free median by at least one line of
  * stores per visit: ratio >= 1 + 1 / k (an effect smaller than storing one of the visit's lines again is one no
- * reordering of a pass could avoid for less). The knee is the least k from which every larger k is crowded (one more
- * stream never empties a set).
+ * reordering of a pass could avoid for less). Crowding is monotone in k (one more stream never empties a set), so
+ * the knee is the step "crowded from k on" that the points' verdicts fit best: the fewest points that disagree with
+ * it, a noisy point missed or passed counting one; on a tie, none, then the least k. The output says how many points
+ * disagree.
  *
  * The price. For k at or past the knee, the extra time per visit (conflict median - free median) / visits, divided by
  * the visit's crowded lines k - W (W the reported ways, else knee - 1), and the least-squares slope of the extra time
@@ -354,8 +356,15 @@ static int run(double ref_insns) {
     fflush(stdout);
   }
 
-  unsigned knee = 0; /* the least k from which every larger k is crowded */
-  for (unsigned i = count; i-- > 0 && points[i].crowded;) knee = points[i].k;
+  /* The step fit: disagree[j] = crowded points below j + uncrowded points from j on; j = count: none. */
+  unsigned knee = 0, best = 0, below = 0, from = 0;
+  for (unsigned i = 0; i < count; ++i) best += points[i].crowded; /* knee none: every crowded point disagrees */
+  for (unsigned i = 0; i < count; ++i) from += !points[i].crowded;
+  for (unsigned j = 0; j < count; ++j) {
+    if (below + from < best) best = below + from, knee = points[j].k;
+    below += points[j].crowded;
+    from -= !points[j].crowded;
+  }
   double floor_most = 0, floors[256];
   for (unsigned i = 0; i < count; ++i) {
     floors[i] = fabs(points[i].floor - 1);
@@ -364,7 +373,7 @@ static int run(double ref_insns) {
   printf("noise floor |free_b/free_a - 1|: median %.4f, largest %.4f over %u points\n", median(floors, count),
          floor_most, count);
   if (!knee) {
-    printf("answer knee none in k 2..%u\n", kmax);
+    printf("answer knee none in k 2..%u (%u points disagree)\n", kmax, best);
   } else {
     const unsigned W = m.l1d_ways ? (unsigned)m.l1d_ways : knee - 1;
     double per_line_ns[256], per_line_insns[256], sx = 0, sy = 0, sxx = 0, sxy = 0, sz = 0;
@@ -387,8 +396,8 @@ static int run(double ref_insns) {
       low = per_line_ns[i] < low ? per_line_ns[i] : low;
       high = per_line_ns[i] > high ? per_line_ns[i] : high;
     }
-    printf("answer knee %u (ways %u %s; crowded lines at the knee %d)\n", knee, W,
-           m.l1d_ways ? "reported" : "taken as knee - 1", (int)knee - (int)W);
+    printf("answer knee %u (ways %u %s; crowded lines at the knee %d; %u points disagree)\n", knee, W,
+           m.l1d_ways ? "reported" : "taken as knee - 1", (int)knee - (int)W, best);
     if (past)
       printf("price per crowded line (extra / (k - %u), k %u..%u): median %.2f ns (%.2f .. %.2f)", W,
              knee > W ? knee : W + 1, kmax, median(per_line_ns, past), low, high);
