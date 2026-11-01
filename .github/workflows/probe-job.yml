@@ -1,0 +1,107 @@
+# One machine: its CPU and cache facts as the OS reports them, the three probes built with the runner's native
+# compiler at -O2 (/O2 under MSVC), the reference loop's instructions counted in the build's disassembly, then
+# store_probe decide in 10 fresh processes, streamer_probe decide 10 4 100 in 5, crowd_probe run in 3. Raw outputs
+# are uploaded as the artifact `out-<name>`.
+name: probe-job
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: the runner's labels, as JSON (a string or a list)
+        required: true
+        type: string
+      name:
+        description: the artifact's suffix
+        required: true
+        type: string
+
+jobs:
+  probe:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: facts (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p out
+          {
+            uname -a
+            lscpu
+            lscpu -C
+            grep -m8 -E 'model name|vendor_id|cpu family|^model|stepping|CPU implementer|CPU part|CPU variant' /proc/cpuinfo
+            grep -s -H . /sys/devices/system/cpu/cpu*/regs/identification/midr_el1
+            grep -s -H . /sys/devices/system/cpu/cpu*/cache/index*/*
+            getconf -a | grep -i cache
+            grep -s -H . /sys/kernel/mm/transparent_hugepage/enabled
+          } > out/facts.txt 2>&1
+          cat out/facts.txt
+
+      - name: facts (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p out
+          { uname -a; sysctl -a | grep -E '^(hw|machdep\.cpu)\.'; } > out/facts.txt 2>&1
+          cat out/facts.txt
+
+      - name: facts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          & {
+            Get-CimInstance Win32_Processor | Format-List Name, Manufacturer, Description, Architecture, NumberOfCores, NumberOfLogicalProcessors, L2CacheSize, L3CacheSize, MaxClockSpeed
+            Get-CimInstance Win32_CacheMemory | Format-List Purpose, Level, InstalledSize, Associativity, LineSize, CacheType
+            Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' | Format-List ProcessorNameString, Identifier, VendorIdentifier
+          } *> out/facts.txt
+          Get-Content out/facts.txt
+
+      - name: tools (Linux, where the image lacks them)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          command -v cc && command -v objdump && command -v python3 ||
+            { sudo apt-get update && sudo apt-get install -y gcc binutils python3; }
+
+      - name: build (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cc --version | tee out/compiler.txt
+          for p in store_probe streamer_probe crowd_probe; do
+            cc -O2 -std=gnu11 -Wall -Wextra -Werror -o $p $p.c -lm
+          done
+          objdump -d --no-show-raw-insn crowd_probe > out/crowd_probe.dis
+
+      - name: build (Windows, MSVC)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VS=%%i
+          if "%PROCESSOR_ARCHITECTURE%"=="ARM64" (set ARCH=arm64) else (set ARCH=x64)
+          call "%VS%\VC\Auxiliary\Build\vcvarsall.bat" %ARCH% || exit /b 1
+          cl 2> out\compiler.txt & type out\compiler.txt
+          for %%p in (store_probe streamer_probe crowd_probe) do (cl /nologo /O2 /W4 /WX /std:c11 %%p.c || exit /b 1)
+          dumpbin /nologo /disasm:nobytes crowd_probe.obj > out\crowd_probe.dis
+
+      - name: probes
+        shell: bash
+        run: |
+          set -eo pipefail
+          py=$(command -v python3 || command -v python)
+          fmas=$(./crowd_probe fmas)
+          "$py" -I loop_insns.py out/crowd_probe.dis reference_loop "$fmas" | tee out/reference_loop.txt
+          insns=$(tail -n 1 out/reference_loop.txt)
+          for r in 1 2 3 4 5 6 7 8 9 10; do echo "== store decide rep $r"; ./store_probe decide; done 2>&1 | tee out/store.txt
+          for r in 1 2 3 4 5; do echo "== streamer decide rep $r"; ./streamer_probe decide 10 4 100; done 2>&1 | tee out/streamer.txt
+          for r in 1 2 3; do echo "== crowd run rep $r"; ./crowd_probe run "$insns"; done 2>&1 | tee out/crowd.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: out-${{ inputs.name }}
+          path: out/

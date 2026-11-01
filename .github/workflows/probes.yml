@@ -1,0 +1,34 @@
+# Every machine class the hosted runners reach, and RISC-V boards behind third-party runners.
+name: probes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  hosted:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest, macos-15-intel]
+    uses: ./.github/workflows/probe-job.yml
+    with:
+      runs-on: '"${{ matrix.runner }}"'
+      name: ${{ matrix.runner }}
+
+  # RISC-V runners come from GitHub Apps installed on this repository: the RISE RISC-V Runners app (label
+  # ubuntu-24.04-riscv) and the Cloud-V GitHub runners app (labels such as bpi-f3). The job runs only once the
+  # repository variable RISCV_RUNNERS is set to "true" after both are installed; until then a run skips it.
+  riscv:
+    if: vars.RISCV_RUNNERS == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - labels: '"ubuntu-24.04-riscv"'
+            name: rise-ubuntu-24.04-riscv
+          - labels: '["self-hosted", "bpi-f3"]'
+            name: cloud-v-bpi-f3
+    uses: ./.github/workflows/probe-job.yml
+    with:
+      runs-on: ${{ matrix.labels }}
+      name: ${{ matrix.name }}
