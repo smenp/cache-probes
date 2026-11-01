@@ -27,6 +27,7 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          set +e +o pipefail  # a fact this kernel does not expose is no failure
           mkdir -p out
           {
             uname -a
@@ -52,11 +53,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           New-Item -ItemType Directory -Force out | Out-Null
           & {
             Get-CimInstance Win32_Processor | Format-List Name, Manufacturer, Description, Architecture, NumberOfCores, NumberOfLogicalProcessors, L2CacheSize, L3CacheSize, MaxClockSpeed
             Get-CimInstance Win32_CacheMemory | Format-List Purpose, Level, InstalledSize, Associativity, LineSize, CacheType
-            Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' | Format-List ProcessorNameString, Identifier, VendorIdentifier
+            foreach ($name in 'ProcessorNameString', 'Identifier', 'VendorIdentifier') {
+              "${name}: " + (Get-ItemPropertyValue 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name $name)
+            }
           } *> out/facts.txt
           Get-Content out/facts.txt
 
@@ -85,7 +89,7 @@ jobs:
           if "%PROCESSOR_ARCHITECTURE%"=="ARM64" (set ARCH=arm64) else (set ARCH=x64)
           call "%VS%\VC\Auxiliary\Build\vcvarsall.bat" %ARCH% || exit /b 1
           cl 2> out\compiler.txt & type out\compiler.txt
-          for %%p in (store_probe streamer_probe crowd_probe) do (cl /nologo /O2 /W4 /WX /std:c11 %%p.c || exit /b 1)
+          for %%p in (store_probe streamer_probe crowd_probe) do (cl /nologo /O2 /W4 /WX /std:c11 /D_CRT_SECURE_NO_WARNINGS %%p.c || exit /b 1)
           dumpbin /nologo /disasm:nobytes crowd_probe.obj > out\crowd_probe.dis
 
       - name: probes

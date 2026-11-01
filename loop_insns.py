@@ -17,6 +17,8 @@ LABEL = re.compile(r"^\s*(?:[0-9a-fA-F]+\s+)?<?([A-Za-z_.$?@][\w.$?@]*)>?:\s*$")
 FUSED = re.compile(r"^v?fn?m(add|sub|la|ls|acc|sac)", re.IGNORECASE)
 BRANCH = re.compile(r"^(j[a-z]*|b(\.[a-z]+)?|b[a-z]{1,4}|cbn?z|tbn?z)$", re.IGNORECASE)
 TARGET = re.compile(r"(?:0x)?([0-9a-fA-F]+)h?(?:\s*<[^>]*>)?\s*$")
+# A trailing comment: "// b.any" (GNU objdump, AArch64), "# 4010 <sym>" (GNU objdump, x86), "; ..." (others).
+COMMENT = re.compile(r"\s+(//|;|# ).*$")
 
 
 def function_lines(text, symbol):
@@ -37,7 +39,7 @@ def function_lines(text, symbol):
 def mnemonic_and_operands(text):
     # objdump and otool separate by tabs; dumpbin and llvm-objdump by runs of spaces; raw bytes are not printed
     # (--no-show-raw-insn, /disasm:nobytes).
-    parts = text.split(None, 1)
+    parts = COMMENT.sub("", text).split(None, 1)
     return (parts[0], parts[1] if len(parts) > 1 else "") if parts else ("", "")
 
 
