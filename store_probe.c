@@ -16,18 +16,19 @@
  * layouts' gaps of one or three lines between streams; they differ in which lines one visit writes together. The
  * loop holds no load, so no load can alias a store's address bits.
  *
- * The bounds. Strides S run over the powers of two from 2 lines to a page: a line apart, any layout puts k
- * distinct lines in one set of a one-set (fully associative) structure, which no layout avoids; past a page,
- * virtual addresses no longer choose the bits a physically indexed structure sets by. At stride S the probe tries
- * k up to K(S) = (l1d_ways - 1) * max(1, min(l1d_span, page) / S): then the conflict layout's region (k S bytes)
- * fits the first-level data cache with one way of every set left for the process's other lines (its stack, the
- * clock's data), and no visit puts more lines into one of its sets than its ways; so a write-back first-level cache
- * serves every store of the conflict layout, and its set conflicts and misses are never read as a structure (the
- * free layouts' gaps can only slow them). A region filling every way of every set is slower in the conflict layout
- * on some cores (within the last streams of a full first level), which is the first level, not a structure past it. Where a
- * way of the first-level cache spans more than a page, the address bits past the page that pick its set are the
- * physical page's, which no layout chooses, so the bound counts the sets one page spans. A structure of fewer bytes
- * than the first-level cache is in reach (its ways + 1 <= K(P)).
+ * The bounds. Strides S run over the powers of two from 2 lines to a page: a line apart, any layout puts k distinct
+ * lines in one set of a one-set (fully associative) structure, which no layout avoids; past a page, virtual addresses
+ * no longer choose the bits a physically indexed structure sets by. At stride S the probe tries k up to K(S) =
+ * (l1d_ways - 1) * max(1, min(l1d_span, page) / S): then the conflict layout's region (k S bytes) fits the first-level
+ * data cache with one way of every set left for the process's other lines (its stack, the clock's data), and no visit
+ * puts more lines into one of its sets than its ways; so a write-back first-level cache serves every store of the
+ * conflict layout, and its set conflicts and misses are never read as a structure (the free layouts' gaps can only slow
+ * them). A region filling every way of every set is slower in the conflict layout on some cores (within the last
+ * streams of a full first level), which is the first level, not a structure past it. Where a way of the first-level
+ * cache spans more than a page, the address bits past the page that pick its set are the physical page's, which no
+ * layout chooses, so the bound counts the sets one page spans. A structure of fewer bytes than the first-level cache is
+ * in reach (its ways + 1 <= K(P)). Where the OS reports no first-level size and line, nothing bounds the probe: it
+ * answers none and says why.
  *
  * The decision at a point. Each layout is timed n times, the three rotating their order every round. The point
  * overflows when the Mann-Whitney count U of (conflict, free) sample pairs with the conflict one slower reaches the
@@ -348,9 +349,9 @@ int main(int argc, char **argv) {
   struct machine m;
   setvbuf(stdout, NULL, _IOLBF, 1 << 12);
   place();
-  if (!query_machine(&m)) {
-    fprintf(stderr, "store_probe: the OS reports no first-level data cache\n");
-    return 1;
+  if (!query_machine(&m)) { /* no bound keeps the conflict layout within the first level: no point is safe to test */
+    printf("answer none (not measurable: the OS reports no first-level data cache size and line to bound the probe)\n");
+    return 0;
   }
   print_machine(&m);
   if (argc >= 2 && strcmp(argv[1], "decide") == 0) return decide(&m);

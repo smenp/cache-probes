@@ -428,9 +428,9 @@ int main(int argc, char **argv) {
   struct machine m;
   setvbuf(stdout, NULL, _IOLBF, 1 << 12);
   place();
-  if (!query_machine(&m)) {
-    fprintf(stderr, "streamer_probe: the OS reports no line or second level\n");
-    return 1;
+  if (!query_machine(&m)) { /* the samples and the regions are sized from the second and last levels */
+    printf("answer none (not measurable: the OS reports no line or second-level size)\n");
+    return 0;
   }
   if (argc == 5 && strcmp(argv[1], "decide") == 0)
     return decide(&m, (unsigned)atoi(argv[2]), (unsigned)atoi(argv[3]), (unsigned)atoi(argv[4]));

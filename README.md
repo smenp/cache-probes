@@ -28,14 +28,17 @@ Each probe pins itself to the last logical CPU the process may use (Linux, Windo
 probes ask for the highest quality of service, which the scheduler serves on performance cores first, and their
 answers are for whichever core ran them.
 
-The geometry each probe uses is the OS's: Linux sysfs, macOS `sysctl hw.*` (sizes and the line; macOS reports no
-associativity), Windows `GetLogicalProcessorInformationEx`. Where the OS reports no ways, `store_probe` bounds its
-streams by the least ways of a cache indexed within the page (size / page) and `crowd_probe` takes the page as the
-way span; both say so in their output.
+The geometry each probe uses is the OS's: Linux sysfs, else the device tree the kernel exposes (the firmware's
+`d-cache-*`, `next-level-cache` and `riscv,cbom-block-size` properties), macOS `sysctl hw.*` (sizes and the line;
+macOS reports no associativity), Windows `GetLogicalProcessorInformationEx`. Every record read is printed with its
+source. Where the OS reports no ways, `store_probe` bounds its streams by the least ways of a cache indexed within
+the page (size / page) and `crowd_probe` takes the page as the way span. Where it reports less, the probes answer
+rather than fail: `store_probe` "none (not measurable ...)" without a first-level size and line, `streamer_probe` the
+same without a second level, and `crowd_probe` runs on a stated range and line policy. Each says so in its output.
 
 ## The workflow
 
-`.github/workflows/probes.yml` (manual dispatch) runs `probe-job.yml` on ubuntu-24.04, ubuntu-24.04-arm,
+`.github/workflows/probes.yml` (manual dispatch; input `runners`: all, hosted or riscv) runs `probe-job.yml` on ubuntu-24.04, ubuntu-24.04-arm,
 windows-latest, windows-11-arm, macos-latest and macos-15-intel: the CPU and cache facts the OS reports, the build,
 the reference loop's count, `store_probe decide` in 10 fresh processes, `streamer_probe decide 10 4 100` in 5,
 `crowd_probe run` in 3, all raw output uploaded as artifacts. A RISC-V job (RISE and Cloud-V runners) runs once their

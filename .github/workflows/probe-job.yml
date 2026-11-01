@@ -38,6 +38,12 @@ jobs:
             grep -s -H . /sys/devices/system/cpu/cpu*/cache/index*/*
             getconf -a | grep -i cache
             grep -s -H . /sys/kernel/mm/transparent_hugepage/enabled
+            grep -E '^(isa|mmu|uarch|mvendorid|marchid|mimpid|hart isa)' /proc/cpuinfo | sort | uniq -c
+            # The firmware's cache description, where the kernel exposes a device tree: 32-bit cells as hex.
+            find /proc/device-tree/ -maxdepth 3 -type f \( -name '*cache*' -o -name 'riscv,cbo*' -o -name 'riscv,isa*' \
+              -o -name compatible -o -name 'device_type' \) 2>/dev/null | sort | while read -r f; do
+              printf '%s: %s | %s\n' "$f" "$(od -An -tx1 "$f" | tr -s ' \n' ' ')" "$(tr '\0' ' ' < "$f" | tr -cd '[:print:]')"
+            done
           } > out/facts.txt 2>&1
           cat out/facts.txt
 
@@ -92,17 +98,26 @@ jobs:
           for %%p in (store_probe streamer_probe crowd_probe) do (cl /nologo /O2 /W4 /WX /std:c11 /D_CRT_SECURE_NO_WARNINGS %%p.c || exit /b 1)
           dumpbin /nologo /disasm:nobytes crowd_probe.obj > out\crowd_probe.dis
 
+      # Every probe process runs whatever the others exit with; a nonzero exit is printed where it happened and fails
+      # the step at the end.
       - name: probes
         shell: bash
         run: |
-          set -eo pipefail
+          failed=0
+          run() { "$@" 2>&1 || { echo "exit $? from $*"; failed=1; }; }
           py=$(command -v python3 || command -v python)
-          fmas=$(./crowd_probe fmas)
-          "$py" -I loop_insns.py out/crowd_probe.dis reference_loop "$fmas" | tee out/reference_loop.txt
-          insns=$(tail -n 1 out/reference_loop.txt)
-          for r in 1 2 3 4 5 6 7 8 9 10; do echo "== store decide rep $r"; ./store_probe decide; done 2>&1 | tee out/store.txt
-          for r in 1 2 3 4 5; do echo "== streamer decide rep $r"; ./streamer_probe decide 10 4 100; done 2>&1 | tee out/streamer.txt
-          for r in 1 2 3; do echo "== crowd run rep $r"; ./crowd_probe run "$insns"; done 2>&1 | tee out/crowd.txt
+          insns=0
+          if "$py" -I loop_insns.py out/crowd_probe.dis reference_loop "$(./crowd_probe fmas)" > out/reference_loop.txt; then
+            insns=$(tail -n 1 out/reference_loop.txt)
+          else
+            failed=1
+          fi
+          cat out/reference_loop.txt
+          for r in 1 2 3 4 5 6 7 8 9 10; do echo "== store decide rep $r"; run ./store_probe decide; done | tee out/store.txt
+          for r in 1 2 3 4 5; do echo "== streamer decide rep $r"; run ./streamer_probe decide 10 4 100; done | tee out/streamer.txt
+          for r in 1 2 3; do echo "== crowd run rep $r"; run ./crowd_probe run "$insns"; done | tee out/crowd.txt
+          grep -h '^exit [0-9]* from' out/store.txt out/streamer.txt out/crowd.txt && failed=1
+          exit $failed
 
       - uses: actions/upload-artifact@v4
         if: always()

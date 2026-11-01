@@ -6,7 +6,8 @@
  *                      on macOS, which has no affinity API, the highest quality of service (performance cores first)
  *   map(bytes, huge)   zeroed-then-filled memory; huge = 1 asks Linux for transparent huge pages, 0 forbids them;
  *                      returns whether they were granted (never elsewhere)
- *   os_caches()        every cache record the OS reports for the CPU this runs on, printed as "os cache: ..." lines
+ *   os_caches()        every cache record the OS reports for the CPU this runs on, printed as "os cache: ..." lines;
+ *                      on Linux from sysfs, else from the firmware's device tree the kernel exposes
  *   peak_rss_kib()     the process's peak resident memory
  *
  * And 16-byte vectors for loads and stores of exactly 16 bytes: GCC vector extensions where the compiler has them,
@@ -30,6 +31,7 @@
 #include <time.h>
 #include <unistd.h>
 #else
+#include <dirent.h>
 #include <sched.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -65,13 +67,22 @@ typedef unsigned char v16 __attribute__((vector_size(16), aligned(16)));
 #define V16_STORE(p, v) (*(v16 *)(p) = (v))
 #endif
 
-/* One cache as the OS reports it; ways 0: not reported (or fully associative, said in the printed record). */
+/* One cache as the OS reports it; 0 in a field: not reported (ways 0 also for fully associative, said in the printed
+ * record). */
 struct cache {
   unsigned level;
   char type; /* 'D' data, 'I' instruction, 'U' unified */
   size_t size, line, ways;
 };
 enum { most_caches = 16 };
+
+/* The first cache of `level` whose type is `type`, or unified where `type` is 'D' (a unified cache holds data);
+ * NULL if the OS reports none. */
+static inline const struct cache *find_cache(const struct cache *c, unsigned count, unsigned level, char type) {
+  for (unsigned i = 0; i < count; ++i)
+    if (c[i].level == level && (c[i].type == type || (type == 'D' && c[i].type == 'U'))) return &c[i];
+  return NULL;
+}
 
 #if defined(_WIN32)
 static inline double now(void) {
@@ -258,6 +269,96 @@ static inline size_t sysfs_value(int cpu, int index, const char *name, char *tex
   size_t v = strtoul(text, &end, 10);
   return end && *end == 'K' ? v << 10 : end && *end == 'M' ? v << 20 : v;
 }
+/* A device-tree property of one 32-bit cell (stored big-endian), or 0 where absent. */
+static inline size_t dt_cell(const char *node, const char *name) {
+  char path[512];
+  unsigned char b[4];
+  size_t v = 0;
+  FILE *f = snprintf(path, sizeof path, "%s/%s", node, name) < (int)sizeof path ? fopen(path, "rb") : NULL;
+  if (f && fread(b, 1, 4, f) == 4) v = (size_t)b[0] << 24 | (size_t)b[1] << 16 | (size_t)b[2] << 8 | b[3];
+  if (f) fclose(f);
+  return v;
+}
+
+/* The node, at most two levels under the device tree's root, whose phandle is `phandle`. */
+static inline int dt_node_of(size_t phandle, char *node, size_t room) {
+  static const char *const parents[] = {"/proc/device-tree", "/proc/device-tree/cpus", "/proc/device-tree/soc"};
+  for (size_t i = 0; i < sizeof parents / sizeof *parents; ++i) {
+    DIR *d = opendir(parents[i]);
+    struct dirent *e;
+    while (d && (e = readdir(d)))
+      if (e->d_name[0] != '.' && snprintf(node, room, "%s/%s", parents[i], e->d_name) < (int)room) {
+        if (dt_cell(node, "phandle") == phandle) {
+          closedir(d);
+          return 1;
+        }
+      }
+    if (d) closedir(d);
+  }
+  return 0;
+}
+
+/* Where sysfs has no cache entries: the firmware's description in the device tree. The first CPU node with cache
+ * properties gives the first level (d-cache-* and i-cache-*: size, sets, block size; ways = size / (sets x block)),
+ * and its next-level-cache links the levels past it. A CPU node with no d-cache properties but a Zicbom block size
+ * (riscv,cbom-block-size, the block the cache-management instructions act on) gives the line alone. */
+static inline unsigned dt_caches(struct cache *out) {
+  DIR *d = opendir("/proc/device-tree/cpus");
+  struct dirent *e;
+  char cpu[256] = "", node[256];
+  while (d && (e = readdir(d)) && !cpu[0])
+    if (strncmp(e->d_name, "cpu@", 4) == 0 &&
+        snprintf(node, sizeof node, "/proc/device-tree/cpus/%s", e->d_name) < (int)sizeof node) {
+      if (dt_cell(node, "d-cache-size") || dt_cell(node, "d-cache-block-size") ||
+          dt_cell(node, "riscv,cbom-block-size"))
+        memcpy(cpu, node, sizeof cpu);
+    }
+  if (d) closedir(d);
+  if (!cpu[0]) {
+    printf("os cache: device tree has no CPU node with cache properties\n");
+    return 0;
+  }
+  unsigned count = 0;
+  static const struct {
+    char type;
+    const char *size, *sets, *block, *line;
+  } first[] = {{'D', "d-cache-size", "d-cache-sets", "d-cache-block-size", "d-cache-line-size"},
+               {'I', "i-cache-size", "i-cache-sets", "i-cache-block-size", "i-cache-line-size"}};
+  for (size_t i = 0; i < 2; ++i) {
+    size_t size = dt_cell(cpu, first[i].size), sets = dt_cell(cpu, first[i].sets);
+    size_t line = dt_cell(cpu, first[i].block) ? dt_cell(cpu, first[i].block) : dt_cell(cpu, first[i].line);
+    if (!size && !line) continue;
+    struct cache k = {1, first[i].type, size, line, sets && line ? size / (sets * line) : 0};
+    printf("os cache: device tree %s level 1 type %c size %zu sets %zu block %zu (ways = size / (sets x block) %zu)\n",
+           cpu, k.type, size, sets, line, k.ways);
+    out[count++] = k;
+  }
+  size_t cbom = dt_cell(cpu, "riscv,cbom-block-size");
+  if (cbom) printf("os cache: device tree %s riscv,cbom-block-size %zu\n", cpu, cbom);
+  if (!find_cache(out, count, 1, 'D') && cbom) {
+    struct cache k = {1, 'D', 0, cbom, 0};
+    printf("os cache: first-level data line %zu from riscv,cbom-block-size (no d-cache properties)\n", cbom);
+    out[count++] = k;
+  }
+  memcpy(node, cpu, sizeof node);
+  for (unsigned level = 2, hops = 0; hops < 4 && count < most_caches; ++hops) {
+    size_t next = dt_cell(node, "next-level-cache");
+    char at[256];
+    if (!next || !dt_node_of(next, at, sizeof at)) break;
+    memcpy(node, at, sizeof node);
+    level = dt_cell(node, "cache-level") ? (unsigned)dt_cell(node, "cache-level") : level;
+    size_t size = dt_cell(node, "cache-size"), sets = dt_cell(node, "cache-sets");
+    size_t line = dt_cell(node, "cache-block-size");
+    if (!line) line = dt_cell(node, "cache-line-size");
+    struct cache k = {level, 'U', size, line, sets && line ? size / (sets * line) : 0};
+    printf("os cache: device tree %s level %u size %zu sets %zu block %zu (ways %zu)\n", node, level, size, sets, line,
+           k.ways);
+    out[count++] = k;
+    ++level;
+  }
+  return count;
+}
+
 /* Every sysfs cache entry of the CPU this runs on, printed and kept. */
 static inline unsigned os_caches(struct cache *out) {
   static const char *const names[] = {"level", "type", "size", "coherency_line_size", "ways_of_associativity",
@@ -281,7 +382,8 @@ static inline unsigned os_caches(struct cache *out) {
                       sysfs_value(cpu, i, "ways_of_associativity", text, sizeof text)};
     out[count++] = k;
   }
-  return count;
+  if (count == 0) printf("os cache: sysfs has no cache entries for cpu%d\n", cpu);
+  return count ? count : dt_caches(out);
 }
 #endif
 
@@ -295,12 +397,5 @@ static inline double clock_granularity(void) {
   return least;
 }
 
-/* The first cache of `level` whose type is `type`, or unified where `type` is 'D' (a unified cache holds data);
- * NULL if the OS reports none. */
-static inline const struct cache *find_cache(const struct cache *c, unsigned count, unsigned level, char type) {
-  for (unsigned i = 0; i < count; ++i)
-    if (c[i].level == level && (c[i].type == type || (type == 'D' && c[i].type == 'U'))) return &c[i];
-  return NULL;
-}
 
 #endif

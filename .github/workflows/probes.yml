@@ -3,9 +3,16 @@ name: probes
 
 on:
   workflow_dispatch:
+    inputs:
+      runners:
+        description: which runners to run
+        type: choice
+        options: [all, hosted, riscv]
+        default: all
 
 jobs:
   hosted:
+    if: inputs.runners != 'riscv'
     strategy:
       fail-fast: false
       matrix:
@@ -19,7 +26,7 @@ jobs:
   # ubuntu-24.04-riscv) and the Cloud-V GitHub runners app (labels such as bpi-f3). The job runs only once the
   # repository variable RISCV_RUNNERS is set to "true" after both are installed; until then a run skips it.
   riscv:
-    if: vars.RISCV_RUNNERS == 'true'
+    if: vars.RISCV_RUNNERS == 'true' && inputs.runners != 'hosted'
     strategy:
       fail-fast: false
       matrix:

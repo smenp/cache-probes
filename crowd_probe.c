@@ -27,7 +27,9 @@
  *
  * The range. k from 2 to size / D + 36, the reported ways (or the least ways of a cache indexed within the page)
  * plus 36: through the ways, the absorption past them that line fill buffers give, and far enough past both to read
- * a per-line slope.
+ * a per-line slope. Where the OS reports no first-level size either, the range stops at ways_policy + 36, and where
+ * it reports no line, the probe stores line_policy-byte lines; both say so in the output, and neither enters the knee
+ * or the price, which come from the timings alone.
  *
  * A point. Each layout is timed n times, the three rotating their order every round, with one sample of the
  * reference loop per round. The point is crowded when the Mann-Whitney count U of (conflict, free) sample pairs with
@@ -65,6 +67,11 @@ static const double family_false_rate = 1e-3;
 static const double sample_granularities = 2000;
 /* The probe's reach past the ways (see the range). */
 static const unsigned reach_past_ways = 36;
+/* Policies for an OS that reports no first-level size or no line: the most ways of the first-level data caches this
+ * probe has been run on (12), rounded up to a power of two, and the line every one of them has (64 bytes; 128 on Apple
+ * cores, whose OS reports it). */
+static const unsigned ways_policy = 16;
+static const size_t line_policy = 64;
 
 enum { conflict, free_a, free_b, layouts };
 
@@ -296,12 +303,14 @@ static int run(double ref_insns) {
   const struct cache *l1d = find_cache(caches, os_caches(caches), 1, 'D');
   if (l1d) m.line = l1d->line, m.l1d_size = l1d->size, m.l1d_ways = l1d->ways;
   m.page = page_size();
-  if (m.line == 0 || m.l1d_size == 0) {
-    fprintf(stderr, "crowd_probe: the OS reports no first-level data cache size or line\n");
-    return 1;
-  }
-  m.span = m.l1d_ways ? m.l1d_size / m.l1d_ways : m.page;
-  const unsigned implied = (unsigned)(m.l1d_size / m.span), kmax = implied + reach_past_ways;
+  const int line_reported = m.line != 0;
+  if (!line_reported) m.line = line_policy;
+  m.span = m.l1d_ways && m.l1d_size ? m.l1d_size / m.l1d_ways : m.page;
+  const unsigned implied = m.l1d_size ? (unsigned)(m.l1d_size / m.span) : ways_policy, kmax = implied + reach_past_ways;
+  const char *ways_from = m.l1d_ways && m.l1d_size ? "reported"
+                          : m.l1d_size             ? "implied by size / page:"
+                                                   : "no size reported, policy:";
+  if (!line_reported) printf("line not reported: %zu B by policy, not measured\n", m.line);
   const size_t bytes = (size_t)kmax * distance(&m, free_b);
   unsigned char *base = map(bytes, 1, &m.huge);
   m.granularity = clock_granularity();
@@ -341,7 +350,7 @@ static int run(double ref_insns) {
   const struct test test = test_for(kmax - 1);
   printf("range k 2..%u (%s ways %u + %u), %u samples a layout per point, crowded at U >= %u of %u and conflict/free "
          ">= 1 + 1/k, sample >= %.1f us\n",
-         kmax, m.l1d_ways ? "reported" : "implied by size / page:", implied, reach_past_ways, test.n, test.critical,
+         kmax, ways_from, implied, reach_past_ways, test.n, test.critical,
          2 * test.n * test.n, 1e6 * least);
   static struct point points[256];
   unsigned count = 0;
