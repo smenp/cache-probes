@@ -76,7 +76,7 @@ struct machine {
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
-#define REFERENCE_ISA "x86-64 AVX2 + FMA3, 8 floats a vector"
+#define REFERENCE_ISA "x86-64 AVX + FMA3, 8 floats a vector"
 enum { reference_floats = 8, reference_fmas = 1 };
 #if defined(_MSC_VER) && !defined(__clang__)
 static int reference_supported(void) {
@@ -87,8 +87,8 @@ static int reference_supported(void) {
 }
 #define REFERENCE_TARGET
 #else
-static int reference_supported(void) { return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"); }
-#define REFERENCE_TARGET __attribute__((target("avx2,fma")))
+static int reference_supported(void) { return __builtin_cpu_supports("avx") && __builtin_cpu_supports("fma"); }
+#define REFERENCE_TARGET __attribute__((target("avx,fma")))
 #endif
 /* Exported, so that its symbol survives in every object format's disassembly. */
 REFERENCE_TARGET NOINLINE void reference_loop(float *y, const float *x, const float *twiddle, size_t n) {

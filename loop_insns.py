@@ -22,9 +22,14 @@ COMMENT = re.compile(r"\s+(//|;|# ).*$")
 
 
 def function_lines(text, symbol):
-    lines, inside = [], False
+    """The function's (address, instruction text) lines, and its local labels' addresses: dumpbin names branch
+    targets by labels such as "$LL4:" on AArch64."""
+    lines, local, pending, inside = [], {}, [], False
     for raw in text.splitlines():
         label = LABEL.match(raw)
+        if label and label.group(1).startswith("$"):
+            pending.append(label.group(1))
+            continue
         if label:
             if inside:
                 break  # the next function
@@ -32,8 +37,11 @@ def function_lines(text, symbol):
             continue
         match = ADDRESS.match(raw) if inside else None
         if match:
-            lines.append((int(match.group(1), 16), match.group(2).strip()))
-    return lines
+            address = int(match.group(1), 16)
+            local.update((name, address) for name in pending)
+            pending = []
+            lines.append((address, match.group(2).strip()))
+    return lines, local
 
 
 def mnemonic_and_operands(text):
@@ -46,17 +54,23 @@ def mnemonic_and_operands(text):
 def main():
     path, symbol, per_iteration = sys.argv[1], sys.argv[2], int(sys.argv[3])
     with open(path, encoding="utf-8", errors="replace") as f:
-        body = function_lines(f.read(), symbol)
+        body, local = function_lines(f.read(), symbol)
     if not body:
         sys.exit(f"loop_insns: no instructions under {symbol} in {path}")
     start = body[0][0]
     loops = []
     for index, (address, text) in enumerate(body):
         mnemonic, operands = mnemonic_and_operands(text)
-        target = TARGET.search(operands)
-        if not BRANCH.match(mnemonic) or not target:
+        if not BRANCH.match(mnemonic):
             continue
-        to = int(target.group(1), 16)
+        last = operands.split(",")[-1].strip()
+        target = TARGET.search(operands)
+        if last in local:
+            to = local[last]
+        elif target:
+            to = int(target.group(1), 16)
+        else:
+            continue
         if start <= to <= address:
             inner = [t for a, t in body if to <= a <= address]
             fused = sum(1 for t in inner if FUSED.match(mnemonic_and_operands(t)[0]))
