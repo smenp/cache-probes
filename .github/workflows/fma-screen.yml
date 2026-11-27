@@ -1,0 +1,72 @@
+name: fma-screen
+on:
+  push:
+    branches: [fma-screen]
+jobs:
+  fma:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, n: 1}
+          - {os: ubuntu-latest, n: 2}
+          - {os: ubuntu-latest, n: 3}
+          - {os: ubuntu-latest, n: 4}
+          - {os: ubuntu-latest, n: 5}
+          - {os: ubuntu-latest, n: 6}
+          - {os: ubuntu-latest, n: 7}
+          - {os: ubuntu-latest, n: 8}
+          - {os: ubuntu-latest, n: 9}
+          - {os: ubuntu-latest, n: 10}
+          - {os: ubuntu-latest, n: 11}
+          - {os: ubuntu-latest, n: 12}
+          - {os: ubuntu-latest, n: 13}
+          - {os: ubuntu-latest, n: 14}
+          - {os: ubuntu-latest, n: 15}
+          - {os: ubuntu-latest, n: 16}
+          - {os: ubuntu-latest, n: 17}
+          - {os: ubuntu-latest, n: 18}
+          - {os: ubuntu-latest, n: 19}
+          - {os: ubuntu-latest, n: 20}
+          - {os: ubuntu-24.04, n: 21}
+          - {os: ubuntu-24.04, n: 22}
+          - {os: ubuntu-24.04, n: 23}
+          - {os: ubuntu-24.04, n: 24}
+          - {os: ubuntu-22.04, n: 25}
+          - {os: ubuntu-22.04, n: 26}
+          - {os: ubuntu-22.04, n: 27}
+          - {os: ubuntu-22.04, n: 28}
+    runs-on: ${{ matrix.os }}
+    name: fma-${{ matrix.n }}-${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe
+        run: |
+          mkdir -p out
+          {
+            echo "job ${{ matrix.n }} ${{ matrix.os }} runner=$RUNNER_NAME image=$ImageVersion"
+            grep -m1 'model name' /proc/cpuinfo
+            grep -m1 '^flags' /proc/cpuinfo
+            lscpu
+            echo "perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid)"
+            gcc --version | head -1
+          } > out/info.txt 2>&1
+          gcc -O2 fma/fma.c -o fma_base
+          gcc -O2 -march=haswell fma/fma.c -o fma_256
+          bins="fma_base fma_256"
+          if grep -q avx512f /proc/cpuinfo; then
+            gcc -O2 -march=skylake-avx512 fma/fma.c -o fma_512
+            bins="$bins fma_512"
+          fi
+          for r in 1 2 3 4 5; do
+            for b in $bins; do
+              echo "== run $r $b" >> out/fma.txt
+              ./$b >> out/fma.txt 2>&1 || echo "exit $?" >> out/fma.txt
+            done
+          done
+          cat out/info.txt out/fma.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fma-${{ matrix.n }}
+          path: out/
