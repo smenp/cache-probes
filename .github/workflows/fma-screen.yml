@@ -52,11 +52,11 @@ jobs:
             echo "perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid)"
             gcc --version | head -1
           } > out/info.txt 2>&1
-          gcc -O2 fma/fma.c -o fma_base
-          gcc -O2 -march=haswell fma/fma.c -o fma_256
+          gcc -O2 fma/fma_ns.c -o fma_base
+          gcc -O2 -march=haswell fma/fma_ns.c -o fma_256
           bins="fma_base fma_256"
           if grep -q avx512f /proc/cpuinfo; then
-            gcc -O2 -march=skylake-avx512 fma/fma.c -o fma_512
+            gcc -O2 -march=skylake-avx512 fma/fma_ns.c -o fma_512
             bins="$bins fma_512"
           fi
           for r in 1 2 3 4 5; do
